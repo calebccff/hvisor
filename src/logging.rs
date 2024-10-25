@@ -98,7 +98,11 @@ impl Log for SimpleLogger {
         let level = record.level();
         let line = record.line().unwrap_or(0);
         let target = record.target();
-        let cpu_id = crate::percpu::this_cpu_data().id;
+        let mut cpu_id = crate::percpu::this_cpu_data().id;
+        // We might not have initialized percpu yet
+        if cpu_id == 0xffffffffffffffff {
+            cpu_id = 0;
+        }
         let level_color = match level {
             Level::Error => ColorCode::BrightRed,
             Level::Warn => ColorCode::BrightYellow,

@@ -39,6 +39,11 @@ mod platform;
 mod zone;
 mod config;
 
+use aarch64_paging::{
+    idmap::IdMap,
+    paging::{Attributes, MemoryRegion, TranslationRegime},
+};
+
 use crate::arch::mm::setup_parange;
 use crate::consts::MAX_CPU_NUM;
 use arch::{cpu::cpu_start, entry::arch_entry};
@@ -81,7 +86,7 @@ fn primary_init_early() {
     extern "C" {
         fn __core_end();
     }
-    logging::init();
+    // logging::init();
     info!("Logging is enabled.");
     info!("__core_end = {:#x?}", __core_end as usize);
     // let system_config = HvSystemConfig::get();
@@ -129,25 +134,126 @@ fn wakeup_secondary_cpus(this_id: usize, host_dtb: usize) {
         if cpu_id == this_id {
             continue;
         }
+        info!("Waking up CPU {}...", cpu_id);
         cpu_start(cpu_id, arch_entry as _, host_dtb);
     }
 }
 
-fn rust_main(cpuid: usize, host_dtb: usize) {
+pub unsafe fn enable_mmu() {
+    // const MAIR_FLAG: usize = 0x004404ff; //10001000000010011111111
+       const MAIR_FLAG: usize = 0xff440c0400;
+    const SCTLR_FLAG: usize = 0x30c51835; //110000110001010001100000110101
+    const TCR_FLAG: usize = 0x8081351c; //10000000100001010011010100010000
+
+    core::arch::asm!(
+        "
+        /* setup the MMU for EL2 hypervisor mappings */
+        ldr	x1, ={MAIR_FLAG}     
+        msr	mair_el2, x1       // memory attributes for pagetable
+        ldr	x1, ={TCR_FLAG}
+	    msr	tcr_el2, x1        // translate control, virt range = [0, 2^36)
+
+	    /* Enable MMU, allow cacheability for instructions and data */
+	    ldr	x1, ={SCTLR_FLAG}
+	    msr	sctlr_el2, x1      // system control register
+
+	    // isb
+	    // tlbi alle2
+	    // dsb	nsh
+    ",
+        MAIR_FLAG = const MAIR_FLAG,
+        TCR_FLAG = const TCR_FLAG,
+        SCTLR_FLAG = const SCTLR_FLAG,
+    );
+}
+
+
+const NORMAL_CACHEABLE: Attributes = Attributes::ATTRIBUTE_INDEX_4.union(Attributes::INNER_SHAREABLE);
+
+fn pagetable_init(idmap: &mut IdMap) {
+    match idmap.map_range(
+        &MemoryRegion::new(0x1000, 0x80000000),
+        Attributes::PXN | Attributes::UXN | Attributes::VALID | Attributes::ACCESSED,
+    ) {
+        Ok(()) => {},
+        Err(e) => {
+            println!("map_range failed! 0x1000");
+        },
+    };
+    match idmap.map_range(
+        &MemoryRegion::new(0x80000000, 0x80000000 + 0x3a800000),
+        NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED,
+    ) {
+        Ok(()) => {},
+        Err(e) => {
+            println!("map_range failed! 0x80000000");
+        },
+    };
+    match idmap.map_range(
+        &MemoryRegion::new(0xc0000000, 0xc0000000 + 0x01800000),
+        NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED,
+    ) {
+        Ok(()) => {},
+        Err(e) => {
+            println!("map_range failed! 0xc0000000");
+        },
+    };
+    match idmap.map_range(
+        &MemoryRegion::new(0xc3400000, 0xc3400000 + 0x3cc00000),
+        NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED,
+    ) {
+        Ok(()) => {},
+        Err(e) => {
+            println!("map_range failed! 0xc3400000");
+        },
+    };
+    match idmap.map_range(
+        &MemoryRegion::new(0x100000000, 0x100000000 + 0x100000000),
+        NORMAL_CACHEABLE | Attributes::VALID | Attributes::ACCESSED,
+    ) {
+        Ok(()) => {},
+        Err(e) => {
+            println!("map_range failed! 0x100000000");
+        },
+    };
+
+    println!("Activating pagetable!");
+    unsafe {
+        idmap.activate();
+        enable_mmu();
+    }
+}
+
+fn rust_main(cpuid: usize, mut host_dtb: usize) {
     arch::trap::install_trap_vector();
 
     let mut is_primary = false;
-    println!("Hello, HVISOR!");
+    println!("Hello, HVISOR! got dtb {:#x}", host_dtb);
+    println!("Some more log messages...");
+
+    let mut idmap;
+
+    logging::init();
+
+    info!("Logging is alive!\n");
+
+    // BAD hacks lmao
+    host_dtb = 0x9ec00000;
+
+    // println!("addr 0x14820980: {:#x}", unsafe { *(0x14820980 as *const u64) });
+
     if MASTER_CPU.load(Ordering::Acquire) == -1 {
         MASTER_CPU.store(cpuid as i32, Ordering::Release);
         is_primary = true;
         memory::heap::init();
         memory::heap::test();
+        idmap = IdMap::new(0, 1, TranslationRegime::El2);
+        pagetable_init(&mut idmap);
     }
 
     let cpu = PerCpu::new(cpuid);
 
-    println!(
+    info!(
         "Booting CPU {}: {:p}, DTB: {:#x}",
         cpu.id, cpu as *const _, host_dtb
     );

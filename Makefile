@@ -45,13 +45,16 @@ endif
 
 # Targets
 .PHONY: all elf disa run gdb monitor clean tools rootfs
-all: $(hvisor_bin)
+all: bin
+
+bin: $(hvisor_bin)
+	echo
 
 elf:
 	cargo build $(build_args)
 
 disa:
-	aarch64-none-elf-readelf -a $(hvisor_elf) > hvisor-elf.txt
+	aarch64-linux-gnu-readelf -a $(hvisor_elf) > hvisor-elf.txt
 	rust-objdump --disassemble $(hvisor_elf) > hvisor.S
 
 tools: 
@@ -84,4 +87,7 @@ clean:
 	make -C tools clean
 	make -C driver clean
 
-include scripts/qemu-$(ARCH).mk
+$(hvisor_bin): elf
+	$(OBJCOPY) $(hvisor_elf) --strip-all -O binary $(hvisor_bin)
+
+# include scripts/qemu-$(ARCH).mk

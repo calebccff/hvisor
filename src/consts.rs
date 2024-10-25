@@ -13,7 +13,7 @@ pub const PER_CPU_ARRAY_PTR: *mut VirtAddr = __core_end as _;
 
 pub const INVALID_ADDRESS: usize = usize::MAX;
 
-pub const MAX_CPU_NUM: usize = 4;
+pub const MAX_CPU_NUM: usize = 8;
 
 pub fn core_end() -> VirtAddr {
     __core_end as _
